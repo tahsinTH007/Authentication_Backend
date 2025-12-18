@@ -7,6 +7,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc",
+    "git:push": "git add . && git commit -m \"$npm_config_msg\" && git push -u origin main",
     "start": "node dist/server.js"
   },
   "keywords": [],
