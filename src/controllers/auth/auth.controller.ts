@@ -1,9 +1,10 @@
 import { Request, Response } from "express";
-import { registerSchema } from "./auth.schema";
+import { loginSchema, registerSchema } from "./auth.schema";
 import { User } from "../../models/user.model";
-import { hashPassword } from "../../libs/hash";
+import { checkPassword, hashPassword } from "../../libs/hash";
 import jwt from "jsonwebtoken";
 import { sendMail } from "../../libs/email";
+import { createAccessToken, createRefreshToken } from "../../libs/token";
 
 function getAppUrl() {
   return process.env.APP_URL || `http://locahost:${process.env.PORT}`;
@@ -35,6 +36,7 @@ export async function registerHandler(req: Request, res: Response) {
     const passwordHash = await hashPassword(password);
 
     const newlyCreatedUser = await User.create({
+      name: name,
       email: normalizedEmail,
       passwordHash: passwordHash,
       role: "user",
@@ -121,6 +123,79 @@ export async function verifyEmailHandler(req: Request, res: Response) {
     console.log(error);
     return res.status(500).json({
       message: "Internal server error.",
+    });
+  }
+}
+
+export async function loginHandler(req: Request, res: Response) {
+  try {
+    const result = loginSchema.safeParse(req.body);
+
+    if (!result.success) {
+      return res.status(400).json({
+        message: "Invalid Data!",
+        error: result.error.flatten(),
+      });
+    }
+
+    const { email, password } = result.data;
+
+    const normalizedEmail = email.toLocaleLowerCase().trim();
+
+    const user = await User.findOne({ email: normalizedEmail });
+
+    if (!user) {
+      return res.status(400).json({
+        message: "Invalid email or password",
+      });
+    }
+
+    const comparePassword = await checkPassword(password, user.passwordHash);
+
+    if (!comparePassword) {
+      return res.status(400).json({
+        message: "Invalid password",
+      });
+    }
+
+    if (!user.isEmailVerified) {
+      return res.status(403).json({
+        message: "Please verify your email before log in.",
+      });
+    }
+
+    const accessToken = createAccessToken(
+      user.id,
+      user.role,
+      user.tokenVersion
+    );
+
+    const refreshToken = createRefreshToken(user.id, user.tokenVersion);
+
+    const isProduction = process.env.NODE_ENV === "production";
+
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    return res.status(200).json({
+      message: "Log in successfully.",
+      accessToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        isEmailVerified: user.isEmailVerified,
+        twoFactorEnabled: user.twoFactorEnabled,
+      },
+    });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({
+      message: "Internal server error",
     });
   }
 }
