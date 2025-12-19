@@ -87,4 +87,40 @@ export async function verifyEmailHandler(req: Request, res: Response) {
       message: "Verification token is missing.",
     });
   }
+
+  try {
+    const payload = jwt.verify(
+      token as string,
+      process.env.JWT_ACCESS_SECRET as string
+    ) as {
+      sub: string;
+    };
+
+    const user = await User.findById(payload.sub);
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(200).json({
+        message: "Email is already verified.",
+      });
+    }
+
+    user.isEmailVerified = true;
+
+    await user?.save();
+
+    res.json({
+      message: "Email is now verified! You can log in.",
+    });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({
+      message: "Internal server error.",
+    });
+  }
 }
