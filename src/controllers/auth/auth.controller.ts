@@ -1,4 +1,6 @@
 import { Request, Response } from "express";
+import crypto from "node:crypto";
+
 import { loginSchema, registerSchema } from "./auth.schema";
 import { User } from "../../models/user.model";
 import { checkPassword, hashPassword } from "../../libs/hash";
@@ -9,6 +11,7 @@ import {
   createRefreshToken,
   verifyRefreshToken,
 } from "../../libs/token";
+import { ulid } from "zod";
 
 function getAppUrl() {
   return process.env.APP_URL || `http://localhost:${process.env.PORT}`;
@@ -274,4 +277,111 @@ export async function logoutHandler(_req: Request, res: Response) {
   return res.status(200).json({
     message: "Logged out",
   });
+}
+
+export async function forgotPasswordHandler(req: Request, res: Response) {
+  const { email } = req.body as { email: string };
+
+  if (!email) {
+    return res.status(400).json({
+      message: "Email is required.",
+    });
+  }
+
+  const normalizedEmail = email.toLocaleLowerCase().trim();
+
+  try {
+    const user = await User.findOne({ email: normalizedEmail });
+
+    if (!user) {
+      return res.json({
+        message:
+          "If an account with this email exist, we will send you a reset link.",
+      });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString("hex");
+
+    const tokenHash = crypto
+      .createHash("sha256")
+      .update(rawToken)
+      .digest("hex");
+
+    user.resetPasswordToken = tokenHash;
+    user.resetPasswordExpires = new Date(Date.now() + 15 * 60 * 1000);
+
+    await user.save();
+
+    const resetUrl = `${getAppUrl()}/auth/reset-password?token=${rawToken}`;
+
+    await sendMail(
+      user.email,
+      "Reset your password",
+      `
+        <p>You request password reset. Click on the below link to reset the password</p>
+        <p><a href=${resetUrl}>${resetUrl}</a></p>
+      `
+    );
+
+    return res.json({
+      message:
+        "If an account with this email exist, we will send you a reset link.",
+    });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({
+      message: "Internal server error.",
+    });
+  }
+}
+
+export async function resetPasswordHandler(req: Request, res: Response) {
+  const { token, password } = req.body as { token?: string; password?: string };
+
+  if (!token) {
+    return res.status(400).json({
+      message: "Reset token is missing.",
+    });
+  }
+
+  if (!password || password.length < 6) {
+    return res.status(400).json({
+      message: "Password must be at least 6 character long.",
+    });
+  }
+
+  try {
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const user = await User.findOne({
+      resetPasswordToken: tokenHash,
+      resetPasswordExpires: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        message: "Invalid or expire token.",
+      });
+    }
+
+    const newPassword = await hashPassword(password);
+
+    user.passwordHash = newPassword;
+
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+
+    user.tokenVersion = user.tokenVersion + 1;
+
+    await user.save();
+
+    return res.json({
+      message: "Password reset successfully!",
+    });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({
+      message: "Internal server error.",
+    });
+  }
 }
