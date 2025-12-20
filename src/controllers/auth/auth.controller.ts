@@ -4,10 +4,14 @@ import { User } from "../../models/user.model";
 import { checkPassword, hashPassword } from "../../libs/hash";
 import jwt from "jsonwebtoken";
 import { sendMail } from "../../libs/email";
-import { createAccessToken, createRefreshToken } from "../../libs/token";
+import {
+  createAccessToken,
+  createRefreshToken,
+  verifyRefreshToken,
+} from "../../libs/token";
 
 function getAppUrl() {
-  return process.env.APP_URL || `http://locahost:${process.env.PORT}`;
+  return process.env.APP_URL || `http://localhost:${process.env.PORT}`;
 }
 
 export async function registerHandler(req: Request, res: Response) {
@@ -54,13 +58,13 @@ export async function registerHandler(req: Request, res: Response) {
       }
     );
 
-    const verifyUrl = `${getAppUrl}/auth/verify-email?token=${verifyToken}`;
+    const verifyUrl = `${getAppUrl()}/auth/verify-email?token=${verifyToken}`;
 
     await sendMail(
       newlyCreatedUser.email,
       "Verify You Email",
       `<p>Please verify your email by clicking this link:</p>
-       <p><a href=${verifyUrl}>Verify Url</a></p>
+       <p><a href=${verifyUrl}>${verifyUrl}</a></p>
       `
     );
 
@@ -198,4 +202,76 @@ export async function loginHandler(req: Request, res: Response) {
       message: "Internal server error",
     });
   }
+}
+
+export async function refreshHandler(req: Request, res: Response) {
+  try {
+    console.log("hi");
+    const token = req.cookies.refreshToken as string | undefined;
+
+    console.log(token);
+
+    if (!token) {
+      return res.status(401).json({
+        message: "Refresh token is missing.",
+      });
+    }
+
+    const payload = verifyRefreshToken(token);
+
+    const user = await User.findById(payload.sub);
+
+    if (!user) {
+      return res.status(401).json({
+        message: "User not found",
+      });
+    }
+
+    if (user.tokenVersion !== payload.tokenVersion) {
+      return res.status(401).json({
+        message: "Refresh token invalided!",
+      });
+    }
+
+    const newAccessToken = createAccessToken(
+      user.id,
+      user.role,
+      user.tokenVersion
+    );
+
+    const newRefreshToken = createRefreshToken(user.id, user.tokenVersion);
+
+    const isProduction = process.env.NODE_ENV === "production";
+
+    res.cookie("refreshToken", newRefreshToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    return res.status(200).json({
+      message: "Token Refreshed.",
+      accessToken: newAccessToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        isEmailVerified: user.isEmailVerified,
+        twoFactorEnabled: user.twoFactorEnabled,
+      },
+    });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({
+      message: "Internal server error.",
+    });
+  }
+}
+
+export async function logoutHandler(_req: Request, res: Response) {
+  res.clearCookie("refreshToken", { path: "/" });
+  return res.status(200).json({
+    message: "Logged out",
+  });
 }

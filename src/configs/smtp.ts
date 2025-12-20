@@ -12,7 +12,7 @@ if (
 }
 
 const host = process.env.SMTP_HOST;
-const port = process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 2525;
+const port = process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587;
 const user = process.env.SMTP_USER;
 const pass = process.env.SMTP_PASS;
 
