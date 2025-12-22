@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { OAuth2Client } from "google-auth-library";
+import { authenticator } from "otplib";
 
 import { loginSchema, registerSchema } from "./auth.schema";
 import { User } from "../../models/user.model";
@@ -161,7 +162,7 @@ export async function loginHandler(req: Request, res: Response) {
       });
     }
 
-    const { email, password } = result.data;
+    const { email, password, twoFactorCode } = result.data;
 
     const normalizedEmail = email.toLocaleLowerCase().trim();
 
@@ -185,6 +186,31 @@ export async function loginHandler(req: Request, res: Response) {
       return res.status(403).json({
         message: "Please verify your email before log in.",
       });
+    }
+
+    if (user.twoFactorEnabled) {
+      if (!twoFactorCode || typeof twoFactorCode !== "string") {
+        return res.status(400).json({
+          message: "Two factor code is required",
+        });
+      }
+
+      if (!user.twoFactorSecret) {
+        return res.status(400).json({
+          message: "Two factor misconfigured for this account",
+        });
+      }
+
+      const isValidCode = authenticator.check(
+        twoFactorCode,
+        user.twoFactorSecret
+      );
+
+      if (!isValidCode) {
+        return res.status(400).json({
+          message: "Invalid two factor code",
+        });
+      }
     }
 
     const accessToken = createAccessToken(
@@ -416,7 +442,7 @@ export async function googleAuthStartHandler(_req: Request, res: Response) {
   } catch (error) {
     console.log(error);
     return res.status(500).json({
-      message: "Internal server error.",
+      message: "Failed to initiate Google authentication.",
     });
   }
 }
@@ -426,7 +452,7 @@ export async function googleAuthCallbackHandler(req: Request, res: Response) {
 
   if (!code) {
     return res.status(400).json({
-      message: "Missing code in callback",
+      message: "Authorization code is missing from Google callback.",
     });
   }
 
@@ -436,8 +462,8 @@ export async function googleAuthCallbackHandler(req: Request, res: Response) {
     const { tokens } = await client.getToken(code);
 
     if (!tokens.id_token) {
-      return res.status(400).json({
-        message: "No google id token present",
+      return res.status(401).json({
+        message: "Google authentication failed. ID token not received.",
       });
     }
 
@@ -451,9 +477,15 @@ export async function googleAuthCallbackHandler(req: Request, res: Response) {
     const email = payload?.email;
     const isEmailVerified = payload?.email_verified;
 
-    if (!email || !isEmailVerified) {
+    if (!email) {
       return res.status(400).json({
-        message: "Google email account is not verified",
+        message: "Unable to retrieve email from Google account.",
+      });
+    }
+
+    if (!isEmailVerified) {
+      return res.status(403).json({
+        message: "Google account email is not verified.",
       });
     }
 
@@ -497,7 +529,7 @@ export async function googleAuthCallbackHandler(req: Request, res: Response) {
     });
 
     return res.status(200).json({
-      message: "Google Login successfully.",
+      message: "Google authentication successful.",
       accessToken,
       user: {
         id: user.id,
@@ -510,7 +542,106 @@ export async function googleAuthCallbackHandler(req: Request, res: Response) {
   } catch (error) {
     console.log(error);
     return res.status(500).json({
-      message: "Internal server error.",
+      message: "An unexpected error occurred during Google authentication.",
+    });
+  }
+}
+
+export async function twoFactorSetupHandler(req: Request, res: Response) {
+  const authReq = req as any;
+  const authUser = authReq.user;
+
+  if (!authUser) {
+    return res.status(401).json({
+      message: "User not authenticated",
+    });
+  }
+
+  try {
+    const user = await User.findById(authUser.id);
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const secret = authenticator.generateSecret();
+
+    const issuer = "NodeAdvancedAuthApp";
+
+    const otpAuthUrl = authenticator.keyuri(user.email, issuer, secret);
+
+    user.twoFactorSecret = secret;
+    user.twoFactorEnabled = false;
+
+    await user.save();
+
+    return res.json({
+      message: "Two Factor setup is done",
+      otpAuthUrl,
+      secret,
+    });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({
+      message: "An unexpected error occurred during Google authentication.",
+    });
+  }
+}
+
+export async function twoFactorVerifyHandler(req: Request, res: Response) {
+  const authReq = req as any;
+  const authUser = authReq.user;
+
+  if (!authUser) {
+    return res.status(401).json({
+      message: "User not authenticated",
+    });
+  }
+
+  const { code } = req.body as { code: string };
+
+  if (!code) {
+    return res.status(400).json({
+      message: "Two Factor code is required.",
+    });
+  }
+
+  try {
+    const user = await User.findById(authUser.id);
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    if (!user.twoFactorSecret) {
+      return res.status(400).json({
+        message: "You don't have 2fa setup yet",
+      });
+    }
+
+    const invalided = authenticator.check(code, user.twoFactorSecret);
+
+    if (!invalided) {
+      return res.status(400).json({
+        message: "Invalid 2fa code",
+      });
+    }
+
+    user.twoFactorEnabled = true;
+    await user.save();
+
+    return res.json({
+      message: "Two Factor Enabled successfully",
+      twoFactorEnabled: true,
+    });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({
+      message: "An unexpected error occurred during Google authentication.",
     });
   }
 }
